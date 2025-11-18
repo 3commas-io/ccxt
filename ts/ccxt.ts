@@ -40,7 +40,7 @@ import {BaseError, ExchangeError, AuthenticationError, PermissionDenied, Account
 //-----------------------------------------------------------------------------
 // this is updated by vss.js when building
 
-const version = '4.5.12';
+const version = '4.5.19';
 
 (Exchange as any).ccxtVersion = version
 
@@ -48,6 +48,7 @@ const version = '4.5.12';
 
 import alpaca from  './src/alpaca.js'
 import apex from  './src/apex.js'
+import arkham from  './src/arkham.js'
 import ascendex from  './src/ascendex.js'
 import backpack from  './src/backpack.js'
 import bequant from  './src/bequant.js'
@@ -95,11 +96,13 @@ import coinsph from  './src/coinsph.js'
 import coinspot from  './src/coinspot.js'
 import cryptocom from  './src/cryptocom.js'
 import cryptomus from  './src/cryptomus.js'
+import deepcoin from  './src/deepcoin.js'
 import defx from  './src/defx.js'
 import delta from  './src/delta.js'
 import deribit from  './src/deribit.js'
 import derive from  './src/derive.js'
 import digifinex from  './src/digifinex.js'
+import dydx from  './src/dydx.js'
 import exmo from  './src/exmo.js'
 import fmfwio from  './src/fmfwio.js'
 import foxbit from  './src/foxbit.js'
@@ -156,6 +159,7 @@ import zonda from  './src/zonda.js'
 // pro exchanges
 import alpacaPro from  './src/pro/alpaca.js'
 import apexPro from  './src/pro/apex.js'
+import arkhamPro from  './src/pro/arkham.js'
 import ascendexPro from  './src/pro/ascendex.js'
 import backpackPro from  './src/pro/backpack.js'
 import bequantPro from  './src/pro/bequant.js'
@@ -187,9 +191,11 @@ import coincheckPro from  './src/pro/coincheck.js'
 import coinexPro from  './src/pro/coinex.js'
 import coinonePro from  './src/pro/coinone.js'
 import cryptocomPro from  './src/pro/cryptocom.js'
+import deepcoinPro from  './src/pro/deepcoin.js'
 import defxPro from  './src/pro/defx.js'
 import deribitPro from  './src/pro/deribit.js'
 import derivePro from  './src/pro/derive.js'
+import dydxPro from  './src/pro/dydx.js'
 import exmoPro from  './src/pro/exmo.js'
 import gatePro from  './src/pro/gate.js'
 import gateioPro from  './src/pro/gateio.js'
@@ -230,6 +236,7 @@ import xtPro from  './src/pro/xt.js'
 const exchanges = {
     'alpaca':                 alpaca,
     'apex':                   apex,
+    'arkham':                 arkham,
     'ascendex':               ascendex,
     'backpack':               backpack,
     'bequant':                bequant,
@@ -277,11 +284,13 @@ const exchanges = {
     'coinspot':               coinspot,
     'cryptocom':              cryptocom,
     'cryptomus':              cryptomus,
+    'deepcoin':               deepcoin,
     'defx':                   defx,
     'delta':                  delta,
     'deribit':                deribit,
     'derive':                 derive,
     'digifinex':              digifinex,
+    'dydx':                   dydx,
     'exmo':                   exmo,
     'fmfwio':                 fmfwio,
     'foxbit':                 foxbit,
@@ -338,6 +347,7 @@ const exchanges = {
 const pro = {
     'alpaca':                 alpacaPro,
     'apex':                   apexPro,
+    'arkham':                 arkhamPro,
     'ascendex':               ascendexPro,
     'backpack':               backpackPro,
     'bequant':                bequantPro,
@@ -369,9 +379,11 @@ const pro = {
     'coinex':                 coinexPro,
     'coinone':                coinonePro,
     'cryptocom':              cryptocomPro,
+    'deepcoin':               deepcoinPro,
     'defx':                   defxPro,
     'deribit':                deribitPro,
     'derive':                 derivePro,
+    'dydx':                   dydxPro,
     'exmo':                   exmoPro,
     'gate':                   gatePro,
     'gateio':                 gateioPro,
@@ -554,6 +566,7 @@ export {
     LeverageTiers,
     alpaca,
     apex,
+    arkham,
     ascendex,
     backpack,
     bequant,
@@ -601,11 +614,13 @@ export {
     coinspot,
     cryptocom,
     cryptomus,
+    deepcoin,
     defx,
     delta,
     deribit,
     derive,
     digifinex,
+    dydx,
     exmo,
     fmfwio,
     foxbit,

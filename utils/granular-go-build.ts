@@ -15,6 +15,10 @@ const filesToDelete =[
     './go/tests/base/test.types.pro.go'
 ]
 
+const whiteListFolders = [
+    'go/v4/protoc'
+]
+
 
 function capitalizeFirstLetter(string: string) {
     return string.charAt(0).toUpperCase() + string.slice(1);
@@ -38,6 +42,10 @@ function deleteFilesRecursively(directory: string, exchangesToKeep: string[]): v
 
         if (file.startsWith('exchange')) {
             return; // Always keep exchange.go and exchange_X.go files
+        }
+
+        if (whiteListFolders.some(folder => fullPath.startsWith(folder))) {
+            return; // Always keep files in whitelisted folders
         }
 
         if (fs.statSync(fullPath).isDirectory()) {
@@ -194,12 +202,13 @@ function transpileAndGenerateAPI(exchanges: string[]) {
 }
 
 function main() {
-    const args = process.argv.slice(2);
+    const argsRaw = process.argv.slice(2);
 
-    if (args.length < 1) {
+    if (argsRaw.length < 1) {
         console.error("Usage: tsx granular-go-build.ts <exchange1> <exchange2> ...");
         process.exit(1);
     }
+    const args = [...new Set(argsRaw)];
     transpileAndGenerateAPI(args)
     foldersToSearch.forEach(folder => deleteFilesRecursively(folder, args));
     createExchangeDynamicFile(args);
