@@ -1677,7 +1677,23 @@ export default class hyperliquid extends hyperliquidRest {
                 this.log ('hyperliquid unattributable ws error frame: ' + retMsg);
                 return true;
             }
-            const lastBrace = retMsg.lastIndexOf ('}');
+            // forward scan keeping the last match, instead of .lastIndexOf (): the Go
+            // transpiler has no mapping for String.lastIndexOf (unlike .indexOf,
+            // which maps to ccxt.GetIndexOf) and emits an uncompilable direct method
+            // call on the any-typed string; a loop counter initialized to a computed
+            // value (eg. retMsg.length - 1) also transpiles its type as `any`, so a
+            // native Go `i--`/`i++` on it fails too — only the canonical `let i = 0;
+            // i < N; i++` forward-loop shape (literal-initialized counter) is
+            // well-supported. This scans the WHOLE string left-to-right, keeping
+            // overwriting lastBrace on every '}' seen, so it ends on the same
+            // (rightmost) index retMsg.lastIndexOf ('}') would have returned
+            // (including -1 if none found)
+            let lastBrace = -1;
+            for (let i = 0; i < retMsg.length; i++) {
+                if (retMsg[i] === '}') {
+                    lastBrace = i;
+                }
+            }
             if (lastBrace < bracketIndex) {
                 this.log ('hyperliquid unattributable ws error frame: ' + retMsg);
                 return true;
