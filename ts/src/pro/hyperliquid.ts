@@ -453,28 +453,36 @@ export default class hyperliquid extends hyperliquidRest {
             };
             return await this.watchMultiple (url, [ messageHash ], this.extend (request, params), [ messageHash ]);
         }
-        // sequential, per-channel awaits (mirrors unWatchBidsAsks): each channel's
+        // conditional, per-channel awaits (mirrors unWatchBidsAsks): each channel's
         // unwatch resolves only on ITS OWN ack, so a two-channel unwatch cannot be
         // reported complete after just the first channel's ack while the other is
-        // still subscribed. Both channels are always unsubscribed here (symmetric
-        // with the default subscribe path); unsubscribing a channel that was never
-        // subscribed (eg. after channel='allMids') is expected to ack as a no-op.
-        const midsHash = 'unsubscribe:allMids';
-        const midsRequest: Dict = {
-            'method': 'unsubscribe',
-            'subscription': {
-                'type': 'allMids',
-            },
-        };
-        let result = await this.watchMultiple (url, [ midsHash ], this.extend (midsRequest, params), [ midsHash ]);
-        const ctxsHash = 'unsubscribe:allDexsAssetCtxs';
-        const ctxsRequest: Dict = {
-            'method': 'unsubscribe',
-            'subscription': {
-                'type': 'allDexsAssetCtxs',
-            },
-        };
-        result = await this.watchMultiple (url, [ ctxsHash ], this.extend (ctxsRequest, params), [ ctxsHash ]);
+        // still subscribed. Unlike the (symmetric) subscribe path, only send/await a
+        // channel's unsubscribe frame if it is actually subscribed — sending an
+        // unsubscribe for a channel that was never subscribed (eg. after
+        // channel='allMids', only 'allMids' was ever sent) gets no ack from
+        // hyperliquid and would hang the await forever instead of no-opping.
+        const client = this.client (url);
+        let result: any = true;
+        if ('allMids' in client.subscriptions) {
+            const midsHash = 'unsubscribe:allMids';
+            const midsRequest: Dict = {
+                'method': 'unsubscribe',
+                'subscription': {
+                    'type': 'allMids',
+                },
+            };
+            result = await this.watchMultiple (url, [ midsHash ], this.extend (midsRequest, params), [ midsHash ]);
+        }
+        if ('allDexsAssetCtxs' in client.subscriptions) {
+            const ctxsHash = 'unsubscribe:allDexsAssetCtxs';
+            const ctxsRequest: Dict = {
+                'method': 'unsubscribe',
+                'subscription': {
+                    'type': 'allDexsAssetCtxs',
+                },
+            };
+            result = await this.watchMultiple (url, [ ctxsHash ], this.extend (ctxsRequest, params), [ ctxsHash ]);
+        }
         return result;
     }
 
@@ -752,8 +760,25 @@ export default class hyperliquid extends hyperliquidRest {
             const meta = this.safeDict (this.options, 'perpUniverse', {});
             const universe = this.safeList (meta, 'universe', []);
             if (universe.length !== ctxs.length) {
-                this.log ('hyperliquid allDexsAssetCtxs length mismatch: universe=' + universe.length.toString () + ' ctxs=' + ctxs.length.toString () + ' — dropping frame, markets need reload');
+                // self-heal: perpUniverse (captured once in fetchSwapMarkets) has drifted
+                // from the live universe (eg. hyperliquid listed/delisted a perp) — kick
+                // off a markets reload so fetchSwapMarkets recaptures options['perpUniverse'].
+                // Guarded + rate-limited: only fire (and log) on the false→true transition
+                // so a run of stale frames while the reload is in flight produces exactly
+                // one reload and one log line, not one per frame. Bare this.spawn (...) is
+                // the established fire-and-forget idiom in this codebase (see watchBidsAsks).
+                if (!this.safeBool (this.options, 'perpUniverseReloading', false)) {
+                    this.options['perpUniverseReloading'] = true;
+                    this.log ('hyperliquid allDexsAssetCtxs length mismatch: universe=' + universe.length.toString () + ' ctxs=' + ctxs.length.toString () + ' — dropping frame, reloading markets');
+                    this.spawn (this.loadMarkets, true);
+                }
                 return true; // order cannot be trusted; do not mis-assign volumes
+            }
+            if (this.safeBool (this.options, 'perpUniverseReloading', false)) {
+                // a subsequent frame's length now matches perpUniverse — the reload (or a
+                // race with another trigger) resolved the drift; clear the guard so a
+                // future mismatch can trigger a fresh reload
+                this.options['perpUniverseReloading'] = false;
             }
             for (let i = 0; i < ctxs.length; i++) {
                 const universeEntry = this.safeDict (universe, i, {});
@@ -792,22 +817,33 @@ export default class hyperliquid extends hyperliquidRest {
         // and allDexsAssetCtxs own disjoint field groups (last/close vs the volume +
         // change fields), and both arrive ordered on one socket, so no per-field
         // timestamp guard is needed (see brief §4.2 rationale)
-        let existing = this.safeDict (this.tickers, symbol) as Dict;
-        if (existing === undefined) {
-            existing = this.parseWsTicker ({}, market) as Dict;
+        //
+        // builds a NEW object instead of mutating the previously stored ticker in
+        // place: in the generated Go, the WS reader goroutine calls this on every
+        // frame while a consumer goroutine may still hold a reference to the object
+        // previously returned via this.tickers[symbol] — mutating that shared object
+        // is a data race. Copying into a fresh dict and only ever replacing the map
+        // entry keeps every previously handed-out reference an immutable snapshot.
+        const previous = this.safeDict (this.tickers, symbol) as Dict;
+        const base = (previous === undefined) ? (this.parseWsTicker ({}, market) as Dict) : previous;
+        const fresh: Dict = {};
+        const baseKeys = Object.keys (base);
+        for (let i = 0; i < baseKeys.length; i++) {
+            const key = baseKeys[i];
+            fresh[key] = base[key];
         }
-        const keys = Object.keys (update);
-        for (let i = 0; i < keys.length; i++) {
-            const key = keys[i];
+        const updateKeys = Object.keys (update);
+        for (let i = 0; i < updateKeys.length; i++) {
+            const key = updateKeys[i];
             const value = update[key];
             if (value !== undefined) {
-                existing[key] = value;
+                fresh[key] = value;
             }
         }
-        existing['symbol'] = symbol;
-        existing['timestamp'] = this.milliseconds ();
-        existing['datetime'] = this.iso8601 (existing['timestamp']);
-        this.tickers[symbol] = existing as Ticker;
+        fresh['symbol'] = symbol;
+        fresh['timestamp'] = this.milliseconds ();
+        fresh['datetime'] = this.iso8601 (fresh['timestamp']);
+        this.tickers[symbol] = fresh as Ticker;
     }
 
     parseWsTicker (rawTicker, market: Market = undefined): Ticker {
@@ -1673,12 +1709,26 @@ export default class hyperliquid extends hyperliquidRest {
                     subscribeHash = 'bbo:' + coin;
                 }
             } else if ((subType === 'allMids') || (subType === 'allDexsAssetCtxs') || (subType === 'webData2')) {
-                messageHash = 'tickers';
-                subscribeHash = subType;
                 const dex = this.safeString (subscription, 'dex');
-                if (dex !== undefined) {
-                    messageHash = 'tickers:' + dex;
-                    subscribeHash = subType + ':' + dex;
+                if (method === 'unsubscribe') {
+                    // matches whatever hash unWatchTickers actually awaits: default path
+                    // 'unsubscribe:allMids' / 'unsubscribe:allDexsAssetCtxs', dex path
+                    // 'unsubscribe:allMids:'+dex — reject THAT pending future, not the
+                    // shared subscribe-side 'tickers'/'tickers:dex' one
+                    messageHash = 'unsubscribe:' + subType;
+                    if (dex !== undefined) {
+                        messageHash = messageHash + ':' + dex;
+                    }
+                    subscribeHash = messageHash;
+                } else {
+                    // subscribe (or method absent/malformed): shared 'tickers'/'tickers:dex'
+                    // hash, matches watchTickers
+                    messageHash = 'tickers';
+                    subscribeHash = subType;
+                    if (dex !== undefined) {
+                        messageHash = 'tickers:' + dex;
+                        subscribeHash = subType + ':' + dex;
+                    }
                 }
             } else if (subType === 'l2Book') {
                 if (coin === undefined) {
@@ -1821,7 +1871,14 @@ export default class hyperliquid extends hyperliquidRest {
         const symbols = Object.keys (this.tickers);
         for (let i = 0; i < symbols.length; i++) {
             const symbol = symbols[i];
-            const market = this.safeMarket (symbol);
+            // safeMarket (symbol) treats its argument as a market id, not a unified
+            // symbol — passing a unified symbol through it risks a lookup miss that
+            // falls back to a synthetic/incomplete market object. Look the loaded
+            // market up directly by symbol instead, and skip symbols with none.
+            const market = this.safeDict (this.markets, symbol);
+            if (market === undefined) {
+                continue;
+            }
             const marketDex = this.safeString (this.safeDict (market, 'info', {}), 'dex');
             if (marketDex === dex) {
                 delete this.tickers[symbol];
