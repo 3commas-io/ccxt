@@ -1,7 +1,7 @@
 //  ---------------------------------------------------------------------------
 
 import hyperliquidRest from '../hyperliquid.js';
-import { NotSupported, ExchangeError } from '../base/errors.js';
+import { NotSupported, ExchangeError, UnsubscribeError } from '../base/errors.js';
 import Client from '../base/ws/Client.js';
 import { Int, Str, Market, OrderBook, Trade, OHLCV, Order, Dict, Strings, Ticker, Tickers, type Num, OrderType, OrderSide, type OrderRequest, Bool, Balances, Position } from '../base/types.js';
 import { ArrayCache, ArrayCacheByTimestamp, ArrayCacheBySymbolById, ArrayCacheBySymbolBySide } from '../base/ws/Cache.js';
@@ -441,11 +441,16 @@ export default class hyperliquid extends hyperliquidRest {
         // single shared hash means every call awaits the SAME underlying future, so
         // there is nothing to race and nothing to leak.
         const messageHash = 'bidsasks';
-        let future = undefined;
+        const client = this.client (url);
         for (let i = 0; i < symbols.length; i++) {
             const market = this.market (symbols[i]);
             const coin = market['swap'] ? market['baseName'] : market['id'];
             const subscribeHash = 'bbo:' + coin;
+            if (subscribeHash in client.subscriptions) {
+                // steady state: already subscribed, nothing to send here — every call
+                // (new or repeat) awaits the single shared future below instead
+                continue;
+            }
             const request: Dict = {
                 'method': 'subscribe',
                 'subscription': {
@@ -453,9 +458,26 @@ export default class hyperliquid extends hyperliquidRest {
                     'coin': coin,
                 },
             };
-            future = this.watchMultiple (url, [ messageHash ], this.extend (request, params), [ subscribeHash ]);
+            // fire-and-forget: sends this coin's own subscribe frame (hyperliquid
+            // requires one frame per coin) and marks it in client.subscriptions; the
+            // returned per-coin future is intentionally discarded here (only the
+            // single shared future awaited below is ever awaited by any call). This
+            // mirrors the codebase-wide `this.spawn (...)` idiom (used bare/uncaught
+            // across most ws exchanges) of discarding a Future whose only job is a
+            // side effect. Empirically verified (scratchpad test, not shipped): if
+            // the shared 'bidsasks' future rejects (e.g. a connection reset) while
+            // one of these discarded futures is still pending, Node raises an
+            // unhandled rejection for it — the same class of risk every bare
+            // `this.spawn (...)` call in this codebase already accepts. The window is
+            // bounded to first-subscribe/resubscribe bursts (the `continue` above
+            // means steady-state calls never reach this branch at all), and no
+            // closure-free way to silence a discarded promise exists anywhere in
+            // ts/src/pro today (checked) short of duplicating base watchMultiple's
+            // send/connect plumbing here, which is a larger and riskier change than
+            // this bounded, precedented tradeoff.
+            this.watchMultiple (url, [ messageHash ], this.extend (request, params), [ subscribeHash ]);
         }
-        const newTickers = await future;
+        const newTickers = await this.watchMultiple (url, [ messageHash ], undefined, undefined);
         if (this.newUpdates) {
             return this.filterByArrayTickers (newTickers, 'symbol', symbols);
         }
@@ -468,7 +490,7 @@ export default class hyperliquid extends hyperliquidRest {
      * @description unsubscribes the per-coin bbo subscriptions for the given symbols
      * @param {string[]} symbols unified symbols
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} status of the last unsubscribe request
+     * @returns {boolean} true when every requested coin's unsubscribe was acknowledged
      */
     async unWatchBidsAsks (symbols: Strings = undefined, params = {}): Promise<any> {
         await this.loadMarkets ();
@@ -1719,6 +1741,18 @@ export default class hyperliquid extends hyperliquidRest {
         // the whole shared stream
         if (symbol in this.bidsasks) {
             delete this.bidsasks[symbol];
+        }
+        let hasRemainingBboSubscription = false;
+        const subscriptionKeys = Object.keys (client.subscriptions);
+        for (let i = 0; i < subscriptionKeys.length; i++) {
+            if (subscriptionKeys[i].startsWith ('bbo:')) {
+                hasRemainingBboSubscription = true;
+                break;
+            }
+        }
+        if (!hasRemainingBboSubscription && ('bidsasks' in client.futures)) {
+            // last bbo subscription gone ⇒ nothing can ever resolve the shared watch future
+            client.reject (new UnsubscribeError (this.id + ' bidsasks'), 'bidsasks');
         }
     }
 
