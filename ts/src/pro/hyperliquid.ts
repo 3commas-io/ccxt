@@ -19,6 +19,7 @@ export default class hyperliquid extends hyperliquidRest {
                 'createOrdersWs': true,
                 'editOrderWs': true,
                 'watchBalance': true,
+                'watchBidsAsks': true,
                 'watchMyTrades': true,
                 'watchOHLCV': true,
                 'watchOrderBook': true,
@@ -29,6 +30,7 @@ export default class hyperliquid extends hyperliquidRest {
                 'watchTradesForSymbols': false,
                 'watchPosition': false,
                 'unWatchBalance': true,
+                'unWatchBidsAsks': true,
                 'watchPositions': true,
                 'unWatchPositions': true,
                 'unWatchOrderBook': true,
@@ -412,6 +414,129 @@ export default class hyperliquid extends hyperliquidRest {
             },
         };
         return await this.watch (url, messageHash, this.extend (request, params), messageHash);
+    }
+
+    /**
+     * @method
+     * @name hyperliquid#watchBidsAsks
+     * @description watches best bid & ask (top of book) for symbols via the per-coin bbo channel
+     * @see https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions
+     * @param {string[]} symbols unified symbols; REQUIRED to be present in loaded markets (an unknown coin id makes hyperliquid close the whole connection)
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/?id=ticker-structure} — resolves on every bbo update with the updated entry
+     */
+    async watchBidsAsks (symbols: Strings = undefined, params = {}): Promise<Tickers> {
+        await this.loadMarkets ();
+        symbols = this.marketSymbols (symbols, undefined, true, true);
+        if (symbols === undefined) {
+            symbols = this.symbols;
+        }
+        const url = this.urls['api']['ws']['public'];
+        const messageHashes = [];
+        let future = undefined;
+        for (let i = 0; i < symbols.length; i++) {
+            const market = this.market (symbols[i]);
+            const coin = market['swap'] ? market['baseName'] : market['id'];
+            const messageHash = 'bidsasks:' + market['symbol'];
+            messageHashes.push (messageHash);
+            const subscribeHash = 'bbo:' + coin;
+            const request: Dict = {
+                'method': 'subscribe',
+                'subscription': {
+                    'type': 'bbo',
+                    'coin': coin,
+                },
+            };
+            // per-coin frame send; the per-symbol future registered here is the
+            // same object the race below awaits (futures are shared per hash)
+            future = this.watchMultiple (url, [ messageHash ], this.extend (request, params), [ subscribeHash ]);
+        }
+        let newTickers = undefined;
+        if (symbols.length === 1) {
+            newTickers = await future; // single symbol: its own future, no race needed
+        } else {
+            newTickers = await this.watchMultiple (url, messageHashes, undefined, undefined);
+        }
+        if (this.newUpdates) {
+            return newTickers;
+        }
+        return this.filterByArrayTickers (this.bidsasks, 'symbol', symbols);
+    }
+
+    /**
+     * @method
+     * @name hyperliquid#unWatchBidsAsks
+     * @description unsubscribes the per-coin bbo subscriptions for the given symbols
+     * @param {string[]} symbols unified symbols
+     * @param {object} [params] extra parameters specific to the exchange API endpoint
+     * @returns {object} status of the last unsubscribe request
+     */
+    async unWatchBidsAsks (symbols: Strings = undefined, params = {}): Promise<any> {
+        await this.loadMarkets ();
+        symbols = this.marketSymbols (symbols, undefined, true, true);
+        if (symbols === undefined) {
+            symbols = this.symbols;
+        }
+        const url = this.urls['api']['ws']['public'];
+        const messageHash = 'unsubscribe:bidsasks';
+        let future = undefined;
+        for (let i = 0; i < symbols.length; i++) {
+            const market = this.market (symbols[i]);
+            const coin = market['swap'] ? market['baseName'] : market['id'];
+            const request: Dict = {
+                'method': 'unsubscribe',
+                'subscription': {
+                    'type': 'bbo',
+                    'coin': coin,
+                },
+            };
+            future = this.watchMultiple (url, [ messageHash ], this.extend (request, params), [ 'unsubscribe:bbo:' + coin ]);
+        }
+        return await future;
+    }
+
+    handleBidAsk (client: Client, message) {
+        //
+        //     {
+        //         "channel": "bbo",
+        //         "data": {
+        //             "coin": "BTC",
+        //             "time": 1783946989607,
+        //             "bbo": [
+        //                 { "px": "62642.0", "sz": "3.12025", "n": 4 },
+        //                 { "px": "62643.0", "sz": "18.27745", "n": 53 }
+        //             ]
+        //         }
+        //     }
+        //
+        const data = this.safeDict (message, 'data', {});
+        const parsedTicker = this.parseWsBidAsk (data);
+        const symbol = parsedTicker['symbol'];
+        this.bidsasks[symbol] = parsedTicker;
+        const result: Dict = {};
+        result[symbol] = parsedTicker;
+        client.resolve (result, 'bidsasks:' + symbol);
+    }
+
+    parseWsBidAsk (data, market: Market = undefined) {
+        const coin = this.safeString (data, 'coin');
+        // TODO(CORE-647 Task 3): route through resolveWsCoin once the spot index map lands
+        const marketId = this.coinToMarketId (coin);
+        market = this.safeMarket (marketId, market);
+        const timestamp = this.safeInteger (data, 'time');
+        const bbo = this.safeList (data, 'bbo', []);
+        const bid = this.safeDict (bbo, 0, {});
+        const ask = this.safeDict (bbo, 1, {});
+        return this.safeTicker ({
+            'symbol': market['symbol'],
+            'timestamp': timestamp,
+            'datetime': this.iso8601 (timestamp),
+            'bid': this.safeNumber (bid, 'px'),
+            'bidVolume': this.safeNumber (bid, 'sz'),
+            'ask': this.safeNumber (ask, 'px'),
+            'askVolume': this.safeNumber (ask, 'sz'),
+            'info': data,
+        }, market);
     }
 
     /**
@@ -1700,6 +1825,7 @@ export default class hyperliquid extends hyperliquidRest {
             'pong': this.handlePong,
             'trades': this.handleTrades,
             'l2Book': this.handleOrderBook,
+            'bbo': this.handleBidAsk,
             'candle': this.handleOHLCV,
             'orderUpdates': this.handleOrder,
             'userFills': this.handleMyTrades,
