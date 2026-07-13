@@ -1701,11 +1701,19 @@ export default class hyperliquid extends hyperliquidRest {
         //        }
         //
         const coin = this.safeString (subscription, 'coin');
+        // TODO(CORE-647 Task 3): route through resolveWsCoin once the spot index map lands
         const marketId = this.coinToMarketId (coin);
         const symbol = this.safeSymbol (marketId);
         const subMessageHash = 'bbo:' + coin;
         const messageHash = 'unsubscribe:bidsasks';
         this.cleanUnsubscription (client, subMessageHash, messageHash);
+        // the pending watchBidsAsks future lives under 'bidsasks:' + symbol, not under
+        // subMessageHash above (bbo's subscribeHash/messageHash split) — reject it the
+        // same base-idiomatic way cleanUnsubscription rejects a hash-matching sibling future
+        this.cleanUnsubscription (client, 'bidsasks:' + symbol, messageHash);
+        if (('unsubscribe:bbo:' + coin) in client.subscriptions) {
+            delete client.subscriptions['unsubscribe:bbo:' + coin];
+        }
         if (symbol in this.bidsasks) {
             delete this.bidsasks[symbol];
         }
