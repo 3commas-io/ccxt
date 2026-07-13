@@ -1445,7 +1445,6 @@ export default class hyperliquid extends hyperliquidRest {
                 this.log ('hyperliquid unparseable ws error frame: ' + retMsg);
                 return true;
             }
-            const error = new ExchangeError (this.id + ' ' + retMsg);
             const subscription = this.safeDict (request, 'subscription', {});
             const subType = this.safeString (subscription, 'type', '');
             const coin = this.safeString (subscription, 'coin');
@@ -1483,7 +1482,14 @@ export default class hyperliquid extends hyperliquidRest {
             if (subscribeHash !== undefined && (subscribeHash in client.subscriptions)) {
                 delete client.subscriptions[subscribeHash];
             }
+            // the tickers subscription may be registered under the messageHash itself
+            // (legacy watchTickers registration) — clean both candidate keys so a
+            // subsequent watch call re-sends the subscribe frame instead of hanging
+            if (messageHash !== undefined && (messageHash in client.subscriptions)) {
+                delete client.subscriptions[messageHash];
+            }
             if (messageHash !== undefined) {
+                const error = new ExchangeError (this.id + ' ' + retMsg);
                 client.reject (error, messageHash);
             } else {
                 this.log ('hyperliquid ws error for unmapped subscription type ' + subType + ': ' + retMsg);
