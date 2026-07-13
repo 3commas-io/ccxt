@@ -1428,25 +1428,34 @@ export default class hyperliquid extends hyperliquidRest {
         const channel = this.safeString (message, 'channel', '');
         if (channel === 'error') {
             const retMsg = this.safeString (message, 'data', '');
-            const error = new ExchangeError (this.id + ' ' + retMsg);
             const bracketIndex = retMsg.indexOf ('{');
             if (bracketIndex < 0) {
                 // no embedded request — cannot attribute; log, do NOT blanket-reject
                 this.log ('hyperliquid unattributable ws error frame: ' + retMsg);
                 return true;
             }
-            const embedded = retMsg.slice (bracketIndex);
+            const lastBrace = retMsg.lastIndexOf ('}');
+            if (lastBrace < bracketIndex) {
+                this.log ('hyperliquid unattributable ws error frame: ' + retMsg);
+                return true;
+            }
+            const embedded = retMsg.slice (bracketIndex, lastBrace + 1);
             const request = this.parseJson (embedded); // returns undefined on invalid JSON (never throws)
             if (request === undefined) {
                 this.log ('hyperliquid unparseable ws error frame: ' + retMsg);
                 return true;
             }
+            const error = new ExchangeError (this.id + ' ' + retMsg);
             const subscription = this.safeDict (request, 'subscription', {});
             const subType = this.safeString (subscription, 'type', '');
             const coin = this.safeString (subscription, 'coin');
             let messageHash = undefined;
             let subscribeHash = undefined;
             if (subType === 'bbo') {
+                if (coin === undefined) {
+                    this.log ('hyperliquid ws error frame for bbo without coin: ' + retMsg);
+                    return true;
+                }
                 // TODO(CORE-647 Task 3): route through resolveWsCoin once the spot index map lands
                 const bboMarketId = this.coinToMarketId (coin);
                 const bboMarket = this.safeMarket (bboMarketId);
@@ -1455,7 +1464,16 @@ export default class hyperliquid extends hyperliquidRest {
             } else if ((subType === 'allMids') || (subType === 'allDexsAssetCtxs') || (subType === 'webData2')) {
                 messageHash = 'tickers';
                 subscribeHash = subType;
+                const dex = this.safeString (subscription, 'dex');
+                if (dex !== undefined) {
+                    messageHash = 'tickers:' + dex;
+                    subscribeHash = subType + ':' + dex;
+                }
             } else if (subType === 'l2Book') {
+                if (coin === undefined) {
+                    this.log ('hyperliquid ws error frame for l2Book without coin: ' + retMsg);
+                    return true;
+                }
                 // TODO(CORE-647 Task 3): route through resolveWsCoin once the spot index map lands
                 const marketId = this.coinToMarketId (coin);
                 const market = this.safeMarket (marketId);
