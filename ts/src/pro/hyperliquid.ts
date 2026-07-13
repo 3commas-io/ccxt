@@ -423,7 +423,7 @@ export default class hyperliquid extends hyperliquidRest {
      * @see https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/websocket/subscriptions
      * @param {string[]} symbols unified symbols; REQUIRED to be present in loaded markets (an unknown coin id makes hyperliquid close the whole connection)
      * @param {object} [params] extra parameters specific to the exchange API endpoint
-     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/?id=ticker-structure} — resolves on every bbo update with the updated entry
+     * @returns {object} a dictionary of [ticker structures]{@link https://docs.ccxt.com/?id=ticker-structure} — resolves on the next bbo update for ANY subscribed coin (not necessarily one of the requested symbols); filtered to the requested symbols, which may yield an empty dict for that particular resolution
      */
     async watchBidsAsks (symbols: Strings = undefined, params = {}): Promise<Tickers> {
         await this.loadMarkets ();
@@ -432,13 +432,19 @@ export default class hyperliquid extends hyperliquidRest {
             symbols = this.symbols;
         }
         const url = this.urls['api']['ws']['public'];
-        const messageHashes = [];
+        // shared messageHash across every symbol and every call (mirrors watchTickers'
+        // 'tickers' hash): this method is called in a hot loop (100-300 calls/s over
+        // 542 symbols in the ECK consumer), and the generated Go client's FutureRace
+        // appends a subscriber channel to every underlying future it races without ever
+        // unlinking losers — per-symbol messageHashes meant every call raced N futures,
+        // leaking a blocked goroutine/link per quiet symbol on every single call. A
+        // single shared hash means every call awaits the SAME underlying future, so
+        // there is nothing to race and nothing to leak.
+        const messageHash = 'bidsasks';
         let future = undefined;
         for (let i = 0; i < symbols.length; i++) {
             const market = this.market (symbols[i]);
             const coin = market['swap'] ? market['baseName'] : market['id'];
-            const messageHash = 'bidsasks:' + market['symbol'];
-            messageHashes.push (messageHash);
             const subscribeHash = 'bbo:' + coin;
             const request: Dict = {
                 'method': 'subscribe',
@@ -447,18 +453,11 @@ export default class hyperliquid extends hyperliquidRest {
                     'coin': coin,
                 },
             };
-            // per-coin frame send; the per-symbol future registered here is the
-            // same object the race below awaits (futures are shared per hash)
             future = this.watchMultiple (url, [ messageHash ], this.extend (request, params), [ subscribeHash ]);
         }
-        let newTickers = undefined;
-        if (symbols.length === 1) {
-            newTickers = await future; // single symbol: its own future, no race needed
-        } else {
-            newTickers = await this.watchMultiple (url, messageHashes, undefined, undefined);
-        }
+        const newTickers = await future;
         if (this.newUpdates) {
-            return newTickers;
+            return this.filterByArrayTickers (newTickers, 'symbol', symbols);
         }
         return this.filterByArrayTickers (this.bidsasks, 'symbol', symbols);
     }
@@ -478,11 +477,14 @@ export default class hyperliquid extends hyperliquidRest {
             symbols = this.symbols;
         }
         const url = this.urls['api']['ws']['public'];
-        const messageHash = 'unsubscribe:bidsasks';
-        let future = undefined;
+        // per-coin hash, sequential awaits: each coin's unwatch resolves only on ITS
+        // own ack, so a multi-symbol unwatch cannot be reported complete after just
+        // the FIRST coin's ack while the rest are still subscribed
+        let result = undefined;
         for (let i = 0; i < symbols.length; i++) {
             const market = this.market (symbols[i]);
             const coin = market['swap'] ? market['baseName'] : market['id'];
+            const messageHash = 'unsubscribe:bbo:' + coin;
             const request: Dict = {
                 'method': 'unsubscribe',
                 'subscription': {
@@ -490,9 +492,9 @@ export default class hyperliquid extends hyperliquidRest {
                     'coin': coin,
                 },
             };
-            future = this.watchMultiple (url, [ messageHash ], this.extend (request, params), [ 'unsubscribe:bbo:' + coin ]);
+            result = await this.watchMultiple (url, [ messageHash ], this.extend (request, params), [ messageHash ]);
         }
-        return await future;
+        return result;
     }
 
     handleBidAsk (client: Client, message) {
@@ -515,7 +517,7 @@ export default class hyperliquid extends hyperliquidRest {
         this.bidsasks[symbol] = parsedTicker;
         const result: Dict = {};
         result[symbol] = parsedTicker;
-        client.resolve (result, 'bidsasks:' + symbol);
+        client.resolve (result, 'bidsasks');
     }
 
     parseWsBidAsk (data, market: Market = undefined) {
@@ -1573,6 +1575,7 @@ export default class hyperliquid extends hyperliquidRest {
             const subscription = this.safeDict (request, 'subscription', {});
             const subType = this.safeString (subscription, 'type', '');
             const coin = this.safeString (subscription, 'coin');
+            const method = this.safeString (request, 'method');
             let messageHash = undefined;
             let subscribeHash = undefined;
             if (subType === 'bbo') {
@@ -1580,11 +1583,15 @@ export default class hyperliquid extends hyperliquidRest {
                     this.log ('hyperliquid ws error frame for bbo without coin: ' + retMsg);
                     return true;
                 }
-                // TODO(CORE-647 Task 3): route through resolveWsCoin once the spot index map lands
-                const bboMarketId = this.coinToMarketId (coin);
-                const bboMarket = this.safeMarket (bboMarketId);
-                messageHash = 'bidsasks:' + bboMarket['symbol'];
-                subscribeHash = 'bbo:' + coin;
+                if (method === 'unsubscribe') {
+                    messageHash = 'unsubscribe:bbo:' + coin;
+                    subscribeHash = messageHash;
+                } else {
+                    // subscribe (or method absent/malformed): shared hash, matches
+                    // watchBidsAsks — every call resolves via the same 'bidsasks' future
+                    messageHash = 'bidsasks';
+                    subscribeHash = 'bbo:' + coin;
+                }
             } else if ((subType === 'allMids') || (subType === 'allDexsAssetCtxs') || (subType === 'webData2')) {
                 messageHash = 'tickers';
                 subscribeHash = subType;
@@ -1705,15 +1712,11 @@ export default class hyperliquid extends hyperliquidRest {
         const marketId = this.coinToMarketId (coin);
         const symbol = this.safeSymbol (marketId);
         const subMessageHash = 'bbo:' + coin;
-        const messageHash = 'unsubscribe:bidsasks';
+        const messageHash = 'unsubscribe:bbo:' + coin;
         this.cleanUnsubscription (client, subMessageHash, messageHash);
-        // the pending watchBidsAsks future lives under 'bidsasks:' + symbol, not under
-        // subMessageHash above (bbo's subscribeHash/messageHash split) — reject it the
-        // same base-idiomatic way cleanUnsubscription rejects a hash-matching sibling future
-        this.cleanUnsubscription (client, 'bidsasks:' + symbol, messageHash);
-        if (('unsubscribe:bbo:' + coin) in client.subscriptions) {
-            delete client.subscriptions['unsubscribe:bbo:' + coin];
-        }
+        // do NOT touch the shared 'bidsasks' watch future here: other coins may still
+        // be streaming through it, so a single-coin unwatch must not reject/resolve
+        // the whole shared stream
         if (symbol in this.bidsasks) {
             delete this.bidsasks[symbol];
         }
