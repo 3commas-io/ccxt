@@ -1,7 +1,7 @@
 //  ---------------------------------------------------------------------------
 
 import hyperliquidRest from '../hyperliquid.js';
-import { NotSupported } from '../base/errors.js';
+import { NotSupported, ExchangeError } from '../base/errors.js';
 import Client from '../base/ws/Client.js';
 import { Int, Str, Market, OrderBook, Trade, OHLCV, Order, Dict, Strings, Ticker, Tickers, type Num, OrderType, OrderSide, type OrderRequest, Bool, Balances, Position } from '../base/types.js';
 import { ArrayCache, ArrayCacheByTimestamp, ArrayCacheBySymbolById, ArrayCacheBySymbolBySide } from '../base/ws/Cache.js';
@@ -1427,9 +1427,49 @@ export default class hyperliquid extends hyperliquidRest {
         //
         const channel = this.safeString (message, 'channel', '');
         if (channel === 'error') {
-            const ret_msg = this.safeString (message, 'data', '');
-            const errorMsg = this.id + ' ' + ret_msg;
-            client.reject (errorMsg);
+            const retMsg = this.safeString (message, 'data', '');
+            const error = new ExchangeError (this.id + ' ' + retMsg);
+            const bracketIndex = retMsg.indexOf ('{');
+            if (bracketIndex < 0) {
+                // no embedded request — cannot attribute; log, do NOT blanket-reject
+                this.log ('hyperliquid unattributable ws error frame: ' + retMsg);
+                return true;
+            }
+            const embedded = retMsg.slice (bracketIndex);
+            const request = this.parseJson (embedded); // returns undefined on invalid JSON (never throws)
+            if (request === undefined) {
+                this.log ('hyperliquid unparseable ws error frame: ' + retMsg);
+                return true;
+            }
+            const subscription = this.safeDict (request, 'subscription', {});
+            const subType = this.safeString (subscription, 'type', '');
+            const coin = this.safeString (subscription, 'coin');
+            let messageHash = undefined;
+            let subscribeHash = undefined;
+            if (subType === 'bbo') {
+                // TODO(CORE-647 Task 3): route through resolveWsCoin once the spot index map lands
+                const bboMarketId = this.coinToMarketId (coin);
+                const bboMarket = this.safeMarket (bboMarketId);
+                messageHash = 'bidsasks:' + bboMarket['symbol'];
+                subscribeHash = 'bbo:' + coin;
+            } else if ((subType === 'allMids') || (subType === 'allDexsAssetCtxs') || (subType === 'webData2')) {
+                messageHash = 'tickers';
+                subscribeHash = subType;
+            } else if (subType === 'l2Book') {
+                // TODO(CORE-647 Task 3): route through resolveWsCoin once the spot index map lands
+                const marketId = this.coinToMarketId (coin);
+                const market = this.safeMarket (marketId);
+                messageHash = 'orderbook:' + market['symbol'];
+                subscribeHash = messageHash;
+            }
+            if (subscribeHash !== undefined && (subscribeHash in client.subscriptions)) {
+                delete client.subscriptions[subscribeHash];
+            }
+            if (messageHash !== undefined) {
+                client.reject (error, messageHash);
+            } else {
+                this.log ('hyperliquid ws error for unmapped subscription type ' + subType + ': ' + retMsg);
+            }
             return true;
         }
         const data = this.safeDict (message, 'data', {});
@@ -1441,13 +1481,13 @@ export default class hyperliquid extends hyperliquidRest {
         const payload = this.safeDict (response, 'payload', {});
         const status = this.safeString (payload, 'status');
         if (status !== undefined && status !== 'ok') {
-            const errorMsg = this.id + ' ' + this.json (payload);
+            const errorMsg = new ExchangeError (this.id + ' ' + this.json (payload));
             client.reject (errorMsg, id);
             return true;
         }
         const type = this.safeString (payload, 'type');
         if (type === 'error') {
-            const error = this.id + ' ' + this.json (payload);
+            const error = new ExchangeError (this.id + ' ' + this.json (payload));
             client.reject (error, id);
             return true;
         }
