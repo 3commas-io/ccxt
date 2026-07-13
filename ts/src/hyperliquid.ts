@@ -740,6 +740,9 @@ export default class hyperliquid extends Exchange {
         const meta = this.safeDict (response, 0, {});
         const universe = this.safeList (meta, 'universe', []);
         const assetCtxs = this.safeList (response, 1, []);
+        // main-dex perp universe, ordered the same way as allDexsAssetCtxs' main-dex
+        // ctxs array — the WS handler zips them by index (no coin identity in ctx rows)
+        this.options['perpUniverse'] = meta;
         const result = [];
         for (let i = 0; i < universe.length; i++) {
             const data = this.extend (
@@ -862,6 +865,10 @@ export default class hyperliquid extends Exchange {
         const meta = this.safeList (first, 'universe', []);
         const tokens = this.safeList (first, 'tokens', []);
         const markets = [];
+        // WS allMids identifies spot markets only by their numeric universe index
+        // ("@107"), not by name — spotIndexMap bridges that WS key to the market id
+        // this method actually assigns below
+        this.options['spotIndexMap'] = {};
         for (let i = 0; i < meta.length; i++) {
             const market = this.safeDict (meta, i, {});
             const index = this.safeInteger (market, 'index');
@@ -887,6 +894,9 @@ export default class hyperliquid extends Exchange {
             if (baseName === undefined || quoteId === undefined) {
                 continue;
                 // why sandbox sending this? check it later
+            }
+            if (index !== undefined) {
+                this.options['spotIndexMap']['@' + index.toString ()] = marketName;
             }
             // do spot currency mapping
             const spotCurrencyMapping = this.safeDict (this.options, 'spotCurrencyMapping', {});
