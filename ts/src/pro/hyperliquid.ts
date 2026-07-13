@@ -427,7 +427,7 @@ export default class hyperliquid extends hyperliquidRest {
      */
     async watchBidsAsks (symbols: Strings = undefined, params = {}): Promise<Tickers> {
         await this.loadMarkets ();
-        symbols = this.marketSymbols (symbols, undefined, true, true);
+        symbols = this.marketSymbols (symbols, undefined, true);
         if (symbols === undefined) {
             symbols = this.symbols;
         }
@@ -473,7 +473,7 @@ export default class hyperliquid extends hyperliquidRest {
      */
     async unWatchBidsAsks (symbols: Strings = undefined, params = {}): Promise<any> {
         await this.loadMarkets ();
-        symbols = this.marketSymbols (symbols, undefined, true, true);
+        symbols = this.marketSymbols (symbols, undefined, true);
         if (symbols === undefined) {
             symbols = this.symbols;
         }
@@ -1693,6 +1693,24 @@ export default class hyperliquid extends hyperliquidRest {
         }
     }
 
+    handleBidAskUnsubscription (client: Client, subscription: Dict) {
+        //
+        //        "subscription":{
+        //           "type":"bbo",
+        //           "coin":"BTC"
+        //        }
+        //
+        const coin = this.safeString (subscription, 'coin');
+        const marketId = this.coinToMarketId (coin);
+        const symbol = this.safeSymbol (marketId);
+        const subMessageHash = 'bbo:' + coin;
+        const messageHash = 'unsubscribe:bidsasks';
+        this.cleanUnsubscription (client, subMessageHash, messageHash);
+        if (symbol in this.bidsasks) {
+            delete this.bidsasks[symbol];
+        }
+    }
+
     handleOHLCVUnsubscription (client: Client, subscription: Dict) {
         const coin = this.safeString (subscription, 'coin');
         const marketId = this.coinToMarketId (coin);
@@ -1788,6 +1806,8 @@ export default class hyperliquid extends hyperliquidRest {
                 this.handleTradesUnsubscription (client, subscription);
             } else if (type === 'webData2') {
                 this.handleTickersUnsubscription (client, subscription);
+            } else if (type === 'bbo') {
+                this.handleBidAskUnsubscription (client, subscription);
             } else if (type === 'candle') {
                 this.handleOHLCVUnsubscription (client, subscription);
             } else if (type === 'orderUpdates') {
