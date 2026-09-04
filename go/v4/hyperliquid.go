@@ -937,10 +937,10 @@ func (this *HyperliquidCore) FetchSpotMarkets(optionalArgs ...any) <-chan any {
 		var meta any = this.SafeList(first, "universe", []any{})
 		var tokens any = this.SafeList(first, "tokens", []any{})
 		// `universe[i].tokens` carries token *index* values, and the `tokens`
-		// array is compacted — a removed token leaves a hole, so position and
+		// array is compacted: a removed token leaves a hole, so position and
 		// index diverge past the first gap. Address the tokens by their own
-		// `index` field: a positional read either resolves a different token
-		// (mislabeling the market) or none at all (dropping it silently).
+		// `index` field. A positional read either resolves a different token
+		// and mislabels the market, or resolves none and drops it silently.
 		var tokensByIndex any = this.IndexBy(tokens, "index")
 		var markets any = []any{}
 		for i := 0; IsLessThan(i, GetArrayLength(meta)); i++ {

@@ -862,10 +862,10 @@ export default class hyperliquid extends Exchange {
         const meta = this.safeList (first, 'universe', []);
         const tokens = this.safeList (first, 'tokens', []);
         // `universe[i].tokens` carries token *index* values, and the `tokens`
-        // array is compacted — a removed token leaves a hole, so position and
+        // array is compacted: a removed token leaves a hole, so position and
         // index diverge past the first gap. Address the tokens by their own
-        // `index` field: a positional read either resolves a different token
-        // (mislabeling the market) or none at all (dropping it silently).
+        // `index` field. A positional read either resolves a different token
+        // and mislabels the market, or resolves none and drops it silently.
         const tokensByIndex = this.indexBy (tokens, 'index');
         const markets = [];
         for (let i = 0; i < meta.length; i++) {
