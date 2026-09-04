@@ -936,6 +936,12 @@ func (this *HyperliquidCore) FetchSpotMarkets(optionalArgs ...any) <-chan any {
 		var second any = this.SafeList(response, 1, []any{})
 		var meta any = this.SafeList(first, "universe", []any{})
 		var tokens any = this.SafeList(first, "tokens", []any{})
+		// `universe[i].tokens` carries token *index* values, and the `tokens`
+		// array is compacted — a removed token leaves a hole, so position and
+		// index diverge past the first gap. Address the tokens by their own
+		// `index` field: a positional read either resolves a different token
+		// (mislabeling the market) or none at all (dropping it silently).
+		var tokensByIndex any = this.IndexBy(tokens, "index")
 		var markets any = []any{}
 		for i := 0; IsLessThan(i, GetArrayLength(meta)); i++ {
 			var market any = this.SafeDict(meta, i, map[string]any{})
@@ -953,10 +959,10 @@ func (this *HyperliquidCore) FetchSpotMarkets(optionalArgs ...any) <-chan any {
 			var taker any = this.SafeNumber(fees, "taker")
 			var maker any = this.SafeNumber(fees, "maker")
 			var tokensPos any = this.SafeList(market, "tokens", []any{})
-			var baseTokenPos any = this.SafeInteger(tokensPos, 0)
-			var quoteTokenPos any = this.SafeInteger(tokensPos, 1)
-			var baseTokenInfo any = this.SafeDict(tokens, baseTokenPos, map[string]any{})
-			var quoteTokenInfo any = this.SafeDict(tokens, quoteTokenPos, map[string]any{})
+			var baseTokenIndex any = this.SafeInteger(tokensPos, 0)
+			var quoteTokenIndex any = this.SafeInteger(tokensPos, 1)
+			var baseTokenInfo any = this.SafeDict(tokensByIndex, baseTokenIndex, map[string]any{})
+			var quoteTokenInfo any = this.SafeDict(tokensByIndex, quoteTokenIndex, map[string]any{})
 			var baseName any = this.SafeString(baseTokenInfo, "name")
 			var quoteId any = this.SafeString(quoteTokenInfo, "name")
 			if IsTrue(IsTrue(IsEqual(baseName, nil)) || IsTrue(IsEqual(quoteId, nil))) {
