@@ -861,6 +861,12 @@ export default class hyperliquid extends Exchange {
         const second = this.safeList (response, 1, []);
         const meta = this.safeList (first, 'universe', []);
         const tokens = this.safeList (first, 'tokens', []);
+        // `universe[i].tokens` carries token *index* values, and the `tokens`
+        // array is compacted — a removed token leaves a hole, so position and
+        // index diverge past the first gap. Address the tokens by their own
+        // `index` field: a positional read either resolves a different token
+        // (mislabeling the market) or none at all (dropping it silently).
+        const tokensByIndex = this.indexBy (tokens, 'index');
         const markets = [];
         for (let i = 0; i < meta.length; i++) {
             const market = this.safeDict (meta, i, {});
@@ -878,10 +884,10 @@ export default class hyperliquid extends Exchange {
             const taker = this.safeNumber (fees, 'taker');
             const maker = this.safeNumber (fees, 'maker');
             const tokensPos = this.safeList (market, 'tokens', []);
-            const baseTokenPos = this.safeInteger (tokensPos, 0);
-            const quoteTokenPos = this.safeInteger (tokensPos, 1);
-            const baseTokenInfo = this.safeDict (tokens, baseTokenPos, {});
-            const quoteTokenInfo = this.safeDict (tokens, quoteTokenPos, {});
+            const baseTokenIndex = this.safeInteger (tokensPos, 0);
+            const quoteTokenIndex = this.safeInteger (tokensPos, 1);
+            const baseTokenInfo = this.safeDict (tokensByIndex, baseTokenIndex, {});
+            const quoteTokenInfo = this.safeDict (tokensByIndex, quoteTokenIndex, {});
             const baseName = this.safeString (baseTokenInfo, 'name');
             const quoteId = this.safeString (quoteTokenInfo, 'name');
             if (baseName === undefined || quoteId === undefined) {
